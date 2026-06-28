@@ -1,0 +1,73 @@
+services:
+  # ---------- PostgreSQL : เก็บประวัติการทำนาย ----------
+  db:
+    image: postgres:16-alpine
+    container_name: webml-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data      # ข้อมูลคงอยู่แม้ลบ container
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------- ML API : FastAPI + scikit-learn ----------
+  ml-api:
+    build:
+      context: ./ml-api
+    container_name: webml-ml-api
+    environment:
+      DB_HOST: db                 # อ้างฐานข้อมูลด้วย "ชื่อ service" ผ่าน Docker network
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${ML_API_PORT:-8000}:8000"   # เปิดออกมาเพื่อทดสอบด้วย curl ได้โดยตรง
+    networks:
+      - app-net
+    depends_on:
+      db:
+        condition: service_healthy      # รอจน DB สุขภาพดีก่อนค่อย start
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------- Web : Flask frontend ----------
+  web:
+    build:
+      context: ./web
+    container_name: webml-web
+    environment:
+      ML_API_URL: http://ml-api:8000   # อ้าง ML API ด้วย "ชื่อ service" ไม่ใช่ localhost
+    ports:
+      - "${WEB_PORT:-8080}:5000"
+    networks:
+      - app-net
+    depends_on:
+      ml-api:
+        condition: service_healthy      # รอจน ML API พร้อมก่อน
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:5000/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+# ---------- custom network : ทุก service อยู่วงเดียวกัน ----------
+networks:
+  app-net:
+    driver: bridge
+
+# ---------- named volume : ข้อมูล PostgreSQL คงอยู่ ----------
+volumes:
+  pgdata:
